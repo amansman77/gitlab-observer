@@ -22,6 +22,7 @@ def load_gitlab_config():
     gitlab_url = os.getenv('GITLAB_URL')
     gitlab_token = os.getenv('GITLAB_TOKEN')
     project_ids = os.getenv('GITLAB_PROJECT_IDS')
+    days = int(os.getenv('GITLAB_DAYS', '7'))  # Default to 7 days if not specified
     
     # Check required settings
     if not gitlab_url or not gitlab_token or not project_ids:
@@ -42,7 +43,8 @@ def load_gitlab_config():
             projects.append({
                 'url': gitlab_url,
                 'token': gitlab_token,
-                'project_id': pid
+                'project_id': pid,
+                'days': days
             })
     
     if not projects:
@@ -66,6 +68,9 @@ def get_project_changes(gl, project_id, days=7):
     try:
         project = gl.projects.get(project_id)
         since_date = datetime.now() - timedelta(days=days)
+        
+        # Get project name for report filename
+        project_name = project.name.lower().replace(' ', '_')
         
         # Get commits with pagination
         commits = project.commits.list(since=since_date.isoformat(), all=True, per_page=100)
@@ -123,6 +128,7 @@ def get_project_changes(gl, project_id, days=7):
             })
         
         return {
+            'project_name': project_name,
             'commits': commit_data,
             'merge_requests': mr_data,
             'issues': issue_data
@@ -135,7 +141,7 @@ def generate_report(changes, output_file='gitlab_changes_report.md'):
     """Generate Markdown report from the changes data."""
     try:
         with open(output_file, 'w', encoding='utf-8') as f:
-            f.write('# GitLab Changes Report\n\n')
+            f.write(f"# GitLab Changes Report - {changes['project_name']}\n\n")
             
             # Write commits section
             f.write('## Commits\n\n')
@@ -201,12 +207,13 @@ def main():
         # Initialize GitLab client
         gl = get_gitlab_client(config['url'], config['token'])
         
-        # Get changes for the last 7 days
-        changes = get_project_changes(gl, config['project_id'])
+        # Get changes for the specified days
+        changes = get_project_changes(gl, config['project_id'], config['days'])
         
         if changes:
-            # Generate report with project-specific filename
-            output_file = f'gitlab_changes_report_{i}.md' if len(projects_config) > 1 else 'gitlab_changes_report.md'
+            # Generate report with project name in filename
+            project_name = changes['project_name']
+            output_file = f'gitlab_changes_report_{project_name}.md'
             generate_report(changes, output_file)
         else:
             print(f"Failed to generate report for project {i} due to errors.")
