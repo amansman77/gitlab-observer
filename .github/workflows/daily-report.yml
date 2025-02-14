@@ -46,21 +46,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: gitlab-reports
-        path: gitlab_changes_report_*.md
-    
-    - name: Send to Discord
-      if: success()
-      run: |
-        for file in gitlab_changes_report_*.md; do
-          if [ -f "$file" ]; then
-            content=$(cat "$file")
-            # Discord has a 2000 character limit, so we need to split the content
-            echo "Sending $file to Discord..."
-            
-            # 제목 부분 전송
-            curl -H "Content-Type: application/json" -X POST -d "{\"content\":\"📊 **GitLab 일일 리포트**\n(${{ env.REPORT_DAYS }}일 동안의 변경사항)\"}" ${{ secrets.DISCORD_WEBHOOK_URL }}
-            
-            # 파일 첨부
-            curl -F "file=@$file" ${{ secrets.DISCORD_WEBHOOK_URL }}
-          fi
-        done 
+        path: gitlab_changes_report_*.md 
