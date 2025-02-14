@@ -1,0 +1,66 @@
+name: Daily GitLab Report
+
+on:
+  schedule:
+    - cron: '0 23 * * 0-4'  # 매주 월-금 오전 8시 (KST = UTC+9)
+  workflow_dispatch:  # 수동 실행 가능
+
+jobs:
+  generate-report:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.8'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Set report days
+      run: |
+        if [ $(date +%u) -eq 1 ]; then
+          echo "REPORT_DAYS=3" >> $GITHUB_ENV  # 월요일엔 3일치 (금,토,일)
+        else
+          echo "REPORT_DAYS=1" >> $GITHUB_ENV  # 다른 날은 1일치
+        fi
+    
+    - name: Create .env file
+      run: |
+        echo "GITLAB_URL=${{ secrets.GITLAB_URL }}" >> .env
+        echo "GITLAB_TOKEN=${{ secrets.GITLAB_TOKEN }}" >> .env
+        echo "GITLAB_PROJECT_IDS=${{ secrets.GITLAB_PROJECT_IDS }}" >> .env
+        echo "GITLAB_DAYS=${{ env.REPORT_DAYS }}" >> .env
+        echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> .env
+        echo "DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}" >> .env
+    
+    - name: Generate report
+      run: python gitlab_changes_report.py
+    
+    - name: Upload report as artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: gitlab-reports
+        path: gitlab_changes_report_*.md
+    
+    - name: Send to Discord
+      if: success()
+      run: |
+        for file in gitlab_changes_report_*.md; do
+          if [ -f "$file" ]; then
+            content=$(cat "$file")
+            # Discord has a 2000 character limit, so we need to split the content
+            echo "Sending $file to Discord..."
+            
+            # 제목 부분 전송
+            curl -H "Content-Type: application/json" -X POST -d "{\"content\":\"📊 **GitLab 일일 리포트**\n(${{ env.REPORT_DAYS }}일 동안의 변경사항)\"}" ${{ secrets.DISCORD_WEBHOOK_URL }}
+            
+            # 파일 첨부
+            curl -F "file=@$file" ${{ secrets.DISCORD_WEBHOOK_URL }}
+          fi
+        done 

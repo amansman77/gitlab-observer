@@ -7,6 +7,10 @@ from dotenv import load_dotenv
 import pandas as pd
 import urllib3
 import warnings
+import json
+from openai import OpenAI
+import discord
+from discord import SyncWebhook
 
 # Suppress SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -137,61 +141,124 @@ def get_project_changes(gl, project_id, days=7):
         print(f"Error getting project changes: {str(e)}")
         return None
 
+def analyze_changes_with_llm(changes):
+    """Analyze changes using OpenAI's GPT model."""
+    try:
+        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        
+        # Prepare the data for analysis
+        analysis_prompt = {
+            "project_name": changes['project_name'],
+            "commit_count": len(changes['commits']),
+            "mr_count": len(changes['merge_requests']),
+            "issue_count": len(changes['issues']),
+            "commits": [
+                {
+                    "author": commit['author'],
+                    "title": commit['title'],
+                    "date": commit['date'],
+                    "changes": [
+                        {
+                            "type": "New file" if diff['new_file'] else 
+                                   "Deleted" if diff['deleted_file'] else 
+                                   "Renamed" if diff['renamed_file'] else "Modified",
+                            "path": diff['new_path'],
+                            "diff": diff['diff']
+                        } for diff in commit['diff_summary']
+                    ]
+                } for commit in changes['commits']
+            ],
+            "issues": [
+                {
+                    "author": issue['author'],
+                    "title": issue['title'],
+                    "state": issue['state'],
+                    "date": issue['date']
+                } for issue in changes['issues']
+            ],
+            "merge_requests": [
+                {
+                    "author": mr['author'],
+                    "title": mr['title'],
+                    "state": mr['state'],
+                    "date": mr['date']
+                } for mr in changes['merge_requests']
+            ]
+        }
+
+        system_prompt = """당신은 개발팀 활동을 분석하는 전문가입니다. 제공된 GitLab 프로젝트 변경사항을 분석하여 다음 내용을 한국어로 제공해주세요:
+
+1. 프로젝트 현황 요약
+   - 전체 이슈/커밋/MR 수
+   - 주요 진행 중인 작업 영역
+   - 커밋 내용 요약 (주요 변경사항)
+
+2. 팀원별 활동 현황
+   - 각 팀원이 담당하고 있는 주요 업무
+   - 진행 중인 작업과 완료된 작업 구분
+   - 각 팀원의 커밋 및 변경사항 요약
+
+3. 주요 개발 영역
+   - 현재 중점적으로 개발 중인 기능/영역
+   - 진행 중인 중요 이슈들
+   - 코드 변경의 주요 내용
+
+4. 다음 단계 제안
+   - 우선적으로 처리가 필요한 작업
+   - 팀 전체의 개발 방향성
+
+전문적이고 간단명료한 톤을 유지하면서, 실질적인 통찰을 제공해주세요.
+특히 커밋 내용과 코드 변경사항을 자세히 분석하여 실제 개발 진행 상황을 구체적으로 설명해주세요."""
+
+        user_prompt = f"다음 GitLab 프로젝트 변경사항을 분석해주세요:\n{json.dumps(analysis_prompt, indent=2, ensure_ascii=False)}"
+
+        response = client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.7,
+            max_tokens=1500
+        )
+
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"Error analyzing changes with LLM: {str(e)}")
+        return None
+
 def generate_report(changes, output_file='gitlab_changes_report.md'):
     """Generate Markdown report from the changes data."""
     try:
+        # 변경사항이 없으면 리포트를 생성하지 않음 (커밋, 머지 리퀘스트, 이슈 모두 체크)
+        if not changes['commits'] and not changes['merge_requests'] and not changes['issues']:
+            print(f"프로젝트 {changes['project_name']}에 변경사항이 없어 리포트를 생성하지 않습니다.")
+            return False
+            
+        # Get LLM analysis
+        analysis = analyze_changes_with_llm(changes)
+        
         with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(f"# GitLab Changes Report - {changes['project_name']}\n\n")
+            f.write(f"# {changes['project_name']} 프로젝트 현황 리포트\n\n")
             
-            # Write commits section
-            f.write('## Commits\n\n')
+            # Write AI Analysis section
+            if analysis:
+                f.write(analysis)
+                f.write('\n\n')
+            
+            # Write summary section if there are any commits
             if changes['commits']:
+                f.write('## 커밋 요약\n\n')
                 for commit in changes['commits']:
-                    f.write(f"### {commit['title']}\n\n")
-                    f.write(f"- **Commit ID**: {commit['id']}\n")
-                    f.write(f"- **Author**: {commit['author']}\n")
-                    f.write(f"- **Date**: {commit['date']}\n\n")
-                    
-                    if commit['diff_summary']:
-                        f.write("#### Changes\n\n")
-                        for diff in commit['diff_summary']:
-                            change_type = 'New file' if diff['new_file'] else \
-                                        'Deleted' if diff['deleted_file'] else \
-                                        'Renamed' if diff['renamed_file'] else 'Modified'
-                            
-                            f.write(f"**{change_type}**: {diff['new_path']}\n\n")
-                            if diff['diff']:
-                                f.write("```diff\n")
-                                f.write(diff['diff'])
-                                f.write("\n```\n\n")
-            else:
-                f.write("No commits in the specified time period.\n\n")
+                    f.write(f"- **{commit['author']}**: {commit['title']}\n")
+                f.write('\n')
             
-            # Write merge requests section
-            f.write('## Merge Requests\n\n')
+            # Write merge requests summary if there are any
             if changes['merge_requests']:
+                f.write('## 머지 리퀘스트 요약\n\n')
                 for mr in changes['merge_requests']:
-                    f.write(f"### {mr['title']}\n\n")
-                    f.write(f"- **ID**: !{mr['id']}\n")
-                    f.write(f"- **Author**: {mr['author']}\n")
-                    f.write(f"- **State**: {mr['state']}\n")
-                    f.write(f"- **Date**: {mr['date']}\n")
-                    f.write(f"- **URL**: {mr['url']}\n\n")
-            else:
-                f.write("No merge requests in the specified time period.\n\n")
-            
-            # Write issues section
-            f.write('## Issues\n\n')
-            if changes['issues']:
-                for issue in changes['issues']:
-                    f.write(f"### {issue['title']}\n\n")
-                    f.write(f"- **ID**: #{issue['id']}\n")
-                    f.write(f"- **Author**: {issue['author']}\n")
-                    f.write(f"- **State**: {issue['state']}\n")
-                    f.write(f"- **Date**: {issue['date']}\n")
-                    f.write(f"- **URL**: {issue['url']}\n\n")
-            else:
-                f.write("No issues in the specified time period.\n\n")
+                    f.write(f"- **{mr['author']}**: {mr['title']} ({mr['state']})\n")
+                f.write('\n')
         
         print(f"Report generated successfully: {output_file}")
         return True
@@ -199,24 +266,81 @@ def generate_report(changes, output_file='gitlab_changes_report.md'):
         print(f"Error generating report: {str(e)}")
         return False
 
+def send_to_discord(report_file, days):
+    """Send the report to Discord using webhook."""
+    try:
+        webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
+        if not webhook_url:
+            print("Discord webhook URL not configured, skipping Discord notification")
+            return False
+
+        webhook = SyncWebhook.from_url(webhook_url)
+        
+        # 파일이 존재하는지 확인
+        if not os.path.exists(report_file):
+            print(f"Report file not found: {report_file}")
+            return False
+            
+        # 리포트 파일 읽기
+        with open(report_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+            
+        # 프로젝트 이름 추출 (파일명에서)
+        project_name = os.path.basename(report_file).replace('gitlab_changes_report_', '').replace('.md', '')
+            
+        # 제목 메시지 전송
+        title_message = f"📊 **GitLab 일일 리포트 - {project_name}**\n"
+        title_message += f"({days}일 동안의 변경사항)"
+        webhook.send(content=title_message)
+        
+        # 파일 전송
+        with open(report_file, 'rb') as f:
+            webhook.send(file=discord.File(f, filename=os.path.basename(report_file)))
+            
+        print(f"Successfully sent report to Discord: {report_file}")
+        return True
+        
+    except Exception as e:
+        print(f"Error sending report to Discord: {str(e)}")
+        return False
+
 def main():
     # Load configuration for all projects
     projects_config = load_gitlab_config()
     
+    print(f"\n프로젝트 설정 확인: {len(projects_config)}개 프로젝트 발견")
+    
+    reports_generated = False  # 리포트 생성 여부를 추적
+    
     for i, config in enumerate(projects_config, 1):
-        # Initialize GitLab client
-        gl = get_gitlab_client(config['url'], config['token'])
-        
-        # Get changes for the specified days
-        changes = get_project_changes(gl, config['project_id'], config['days'])
-        
-        if changes:
-            # Generate report with project name in filename
-            project_name = changes['project_name']
-            output_file = f'gitlab_changes_report_{project_name}.md'
-            generate_report(changes, output_file)
-        else:
-            print(f"Failed to generate report for project {i} due to errors.")
+        print(f"\n프로젝트 {i} 처리 중 (ID: {config['project_id']})...")
+        try:
+            # Initialize GitLab client
+            gl = get_gitlab_client(config['url'], config['token'])
+            
+            # Get changes for the specified days
+            changes = get_project_changes(gl, config['project_id'], config['days'])
+            
+            if changes:
+                # Generate report with project name in filename
+                project_name = changes['project_name']
+                output_file = f'gitlab_changes_report_{project_name}.md'
+                print(f"- 프로젝트 이름: {project_name}")
+                if generate_report(changes, output_file):
+                    reports_generated = True
+                    # 리포트가 생성되면 Discord로 전송
+                    send_to_discord(output_file, config['days'])
+            else:
+                print(f"- 프로젝트 {config['project_id']} 처리 중 오류 발생")
+        except Exception as e:
+            print(f"- 프로젝트 {config['project_id']} 처리 중 예외 발생: {str(e)}")
+    
+    # 모든 프로젝트에서 변경사항이 없었다면 종료 코드 1을 반환
+    if not reports_generated:
+        print("\n모든 프로젝트에서 변경사항이 없어 리포트가 생성되지 않았습니다.")
+        sys.exit(1)
+    
+    sys.exit(0)
 
 if __name__ == "__main__":
     main() 
