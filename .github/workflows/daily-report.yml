@@ -43,7 +43,7 @@ jobs:
       run: python gitlab_changes_report.py
     
     - name: Upload report as artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: gitlab-reports
         path: gitlab_changes_report_*.md
