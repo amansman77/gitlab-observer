@@ -24,8 +24,10 @@ jobs:
     
     - name: Set report days
       run: |
-        if [ $(date +%u) -eq 1 ]; then
-          echo "REPORT_DAYS=3" >> $GITHUB_ENV  # 월요일엔 3일치 (금,토,일)
+        # UTC 23시는 KST 다음날 8시이므로, KST 기준 요일을 얻기 위해 하루를 더함
+        NEXT_DAY=$(TZ='Asia/Seoul' date -d 'tomorrow' +%u)
+        if [ $NEXT_DAY -eq 1 ]; then
+          echo "REPORT_DAYS=3" >> $GITHUB_ENV  # KST 월요일엔 3일치 (금,토,일)
         else
           echo "REPORT_DAYS=1" >> $GITHUB_ENV  # 다른 날은 1일치
         fi
